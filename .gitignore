@@ -1,0 +1,5 @@
+main/venv/
+main/.idea/
+main/__pycache__/
+data/
+.DS_Store
