@@ -19,7 +19,7 @@ def transform_angle(ms_angle):
 
 MIN_BED = 1
 MIN_BATH = 1
-MAX_PRICE = "400"
+MAX_PRICE = "450"
 MIN_PRICE = "250"
 NORTH = -37.794567
 WEST = 144.948628
@@ -143,7 +143,7 @@ def get_realestate_properties():
     south = SOUTH
     east = EAST
     page_size = (
-        500  # At most 500 properties are include which seems to be enough in this case.
+        200  # It seems that the maximum number is 200 for the website.
     )
     content = requests.get(
         f"https://services.realestate.com.au/services/listings/search?query="
@@ -245,7 +245,7 @@ def initiate_property_data(file, domain_property_info, realestate_property_info)
     property_data = domain_property_data.append(
         realestate_property_info, ignore_index=True, sort=False
     ).sort_values("Name")
-    property_data["Preferred"] = True
+    property_data["Preferred"] = False
     property_data = property_data.set_index("Name")
     if file is not None:
         property_data.to_csv(file)
