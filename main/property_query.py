@@ -1,30 +1,9 @@
 import requests
+import numpy as np
 import pandas as pd
 import re
 import time
 import warnings
-
-
-def transform_angle(ms_angle):
-    """Transform minute and second formatted angle to decimal degree."""
-    de_angle = 0
-    multiplier = 1 if ms_angle[0] > 0 else -1
-    for i, value in enumerate(ms_angle):
-        if i == 0:
-            de_angle += value
-        else:
-            de_angle += multiplier * value / 60 ** i
-    return de_angle
-
-
-MIN_BED = 1
-MIN_BATH = 1
-MAX_PRICE = "450"
-MIN_PRICE = "250"
-NORTH = -37.794567
-WEST = 144.948628
-SOUTH = transform_angle([-37, 48, 14])
-EAST = 144.967744
 
 
 def distill_from_pattern(string, start_pattern, end_pattern="<"):
@@ -46,6 +25,24 @@ def domain_exceeding_check(collected_num, content):
     return
 
 
+def get_room_street(property_name):
+    road_suff = ['Street', 'Road', 'St', 'street', 'STREET', 'Rd', 'ROAD', 'Drive', 'Place', 'Lane', 'Terrace', 'ST',
+                 'RD']
+    start = re.search('/', property_name)
+    room = ''
+    street = ''
+    if start:
+        room = property_name[:start.start()].strip()
+    else:
+        return room, street
+    for suff in road_suff:
+        end = re.search(suff, property_name[start.start()+1:])
+        if end:
+            street = property_name[start.start()+1:][:end.start()].strip()
+            break
+    return room, street
+
+
 def get_domain_content_info(content):
     info, _ = distill_from_pattern(content, "", '"SearchResults":{"results":')
     properties = pd.DataFrame()
@@ -62,6 +59,9 @@ def get_domain_content_info(content):
         current_property["Name"], property_info = distill_from_pattern(
             property_info, '"street":"', '"'
         )
+        room_street = get_room_street(current_property["Name"])
+        current_property["Room"] = room_street[0]
+        current_property["Address"] = room_street[1]
         current_property["Name"] += " (D)" + current_property["Url"][-4:]
         features, property_info = distill_from_pattern(
             property_info, '"features":{', "}"
@@ -78,15 +78,15 @@ def get_domain_content_info(content):
     return properties
 
 
-def get_candidate_domain_properties():
-    min_bed = MIN_BED
-    min_bath = MIN_BATH
-    max_price = MAX_PRICE
-    min_price = MIN_PRICE
-    north = NORTH
-    west = WEST
-    south = SOUTH
-    east = EAST
+def get_candidate_domain_properties(requisition):
+    min_bed = requisition.get('min_bed', 1)
+    min_bath = requisition.get('min_bath', 1)
+    max_price = requisition.get('max_price')
+    min_price = requisition.get('min_price', '0')
+    north = requisition.get('north')
+    west = requisition.get('west')
+    south = requisition.get('south')
+    east = requisition.get('east')
     if min_bath:
         response = requests.get(
             f"https://www.domain.com.au/rent/?bedrooms={min_bed}-any&bathrooms={min_bath}-any&price={min_price}-"
@@ -133,15 +133,15 @@ def slice_line(left_content, start, stop_str):
     return start_str[: re.search(stop_str, start_str).start()]
 
 
-def get_realestate_properties():
-    min_bed = MIN_BED
-    min_bath = MIN_BATH
-    max_price = MAX_PRICE
-    min_price = MIN_PRICE
-    north = NORTH
-    west = WEST
-    south = SOUTH
-    east = EAST
+def get_realestate_properties(requisition):
+    min_bed = requisition.get('min_bed', 1)
+    min_bath = requisition.get('min_bath', 1)
+    max_price = requisition.get('max_price')
+    min_price = requisition.get('min_price', '0')
+    north = requisition.get('north')
+    west = requisition.get('west')
+    south = requisition.get('south')
+    east = requisition.get('east')
     page_size = (
         200  # It seems that the maximum number is 200 for the website.
     )
@@ -193,6 +193,9 @@ def get_realestate_properties():
                 + " (R)"
                 + current_property["Url"][-4:]
             )
+            room_street = get_room_street(current_property["Name"])
+            current_property["Room"] = room_street[0]
+            current_property["Address"] = room_street[1]
 
         if re.search('"propertyType":"', property_content):
             current_property["Type"] = slice_line(
@@ -345,47 +348,27 @@ def update_property_data(
         with open(log_file, "a+") as f:
             present = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
             preferred_names = set(previous_data[previous_data["Preferred"]].index)
+            nonpreferred_names = set(previous_data[~previous_data["Preferred"]].index)
             f.write(f"  Update at: {present} (UTC)\n")
             if diff_dict is not None:
                 f.write(f"    Properties' value change: {diff_dict}\n")
+                print(f"Value change for preferred property(ies):")
                 print_diff_info(diff_dict, preferred_names)
+                print()
+                print(f"Value change for non-preferred property(ies):")
+                print_diff_info(diff_dict, nonpreferred_names)
+                print()
             if len(new_names) > 0:
                 f.write(f"    Add new properties: {new_names}\n")
                 print(f"New available properties:")
                 for name in new_names:
                     print(f"  {name}: {updated_data.loc[name, 'Url']}")
+                print()
             if len(passed_names) > 0:
                 f.write(f"    Delete properties: {passed_names}\n")
                 print(
                     f"No longer available preferred properties: {passed_names & preferred_names}"
                 )
+                print()
+                print(f"{len(passed_names - preferred_names)} other properties are no longer available.")
         return add_data
-
-
-def monitor_properties(file, log_file):
-    domain_property_info = get_candidate_domain_properties()
-    realestate_property_info = get_realestate_properties()
-    try:
-        previous_data = pd.read_csv(file, index_col=0)
-        return update_property_data(
-            file,
-            previous_data,
-            domain_property_info,
-            realestate_property_info,
-            log_file,
-        )
-    except FileNotFoundError:
-        present = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
-        with open(log_file, "w+") as f:
-            f.write(f"Start monitoring properties in {file} at: {present} (UTC)\n")
-        print("Property monitor initiating...")
-        return initiate_property_data(
-            file, domain_property_info, realestate_property_info
-        )
-
-
-def set_preference(file, names, set_not_preferred=True):
-    foo = pd.read_csv(file, index_col=0)
-    foo.loc[names, "Preferred"] = not set_not_preferred
-    foo.to_csv(file)
-    return
