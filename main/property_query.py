@@ -26,19 +26,32 @@ def domain_exceeding_check(collected_num, content):
 
 
 def get_room_street(property_name):
-    road_suff = ['Street', 'Road', 'St', 'street', 'STREET', 'Rd', 'ROAD', 'Drive', 'Place', 'Lane', 'Terrace', 'ST',
-                 'RD']
-    start = re.search('/', property_name)
-    room = ''
-    street = ''
+    road_suff = [
+        "Street",
+        "Road",
+        "St",
+        "street",
+        "STREET",
+        "Rd",
+        "ROAD",
+        "Drive",
+        "Place",
+        "Lane",
+        "Terrace",
+        "ST",
+        "RD",
+    ]
+    start = re.search("/", property_name)
+    room = ""
+    street = ""
     if start:
-        room = property_name[:start.start()].strip()
+        room = property_name[: start.start()].strip()
     else:
         return room, street
     for suff in road_suff:
-        end = re.search(suff, property_name[start.start()+1:])
+        end = re.search(suff, property_name[start.start() + 1 :])
         if end:
-            street = property_name[start.start()+1:][:end.start()].strip()
+            street = property_name[start.start() + 1 :][: end.start()].strip()
             break
     return room, street
 
@@ -79,25 +92,31 @@ def get_domain_content_info(content):
 
 
 def get_candidate_domain_properties(requisition):
-    min_bed = requisition.get('min_bed', 1)
-    min_bath = requisition.get('min_bath', 1)
-    max_price = requisition.get('max_price')
-    min_price = requisition.get('min_price', '0')
-    north = requisition.get('north')
-    west = requisition.get('west')
-    south = requisition.get('south')
-    east = requisition.get('east')
+    min_bed = requisition.get("min_bed", 1)
+    min_bath = requisition.get("min_bath", 1)
+    max_price = requisition.get("max_price")
+    min_price = requisition.get("min_price", "0")
+    north = requisition.get("north")
+    west = requisition.get("west")
+    south = requisition.get("south")
+    east = requisition.get("east")
     if min_bath:
         response = requests.get(
             f"https://www.domain.com.au/rent/?bedrooms={min_bed}-any&bathrooms={min_bath}-any&price={min_price}-"
             f"{max_price}&excludedeposittaken=1&startloc={north},{west}&endloc={south},{east}&"
-            f"displaymap=1"
+            f"displaymap=1",
+            headers={
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:91.0) Gecko/20100101 Firefox/91.0"
+            },
         )
     else:
         response = requests.get(
             f"https://www.domain.com.au/rent/?bedrooms={min_bed}-any&price={min_price}-{max_price}&"
             f"excludedeposittaken=1&startloc={north},{west}&endloc={south},{east}&"
-            f"displaymap=1"
+            f"displaymap=1",
+            headers={
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:91.0) Gecko/20100101 Firefox/91.0"
+            },
         )
     content = response.content.decode("utf-8")
     property_info = get_domain_content_info(content)
@@ -134,17 +153,15 @@ def slice_line(left_content, start, stop_str):
 
 
 def get_realestate_properties(requisition):
-    min_bed = requisition.get('min_bed', 1)
-    min_bath = requisition.get('min_bath', 1)
-    max_price = requisition.get('max_price')
-    min_price = requisition.get('min_price', '0')
-    north = requisition.get('north')
-    west = requisition.get('west')
-    south = requisition.get('south')
-    east = requisition.get('east')
-    page_size = (
-        200  # It seems that the maximum number is 200 for the website.
-    )
+    min_bed = requisition.get("min_bed", 1)
+    min_bath = requisition.get("min_bath", 1)
+    max_price = requisition.get("max_price")
+    min_price = requisition.get("min_price", "0")
+    north = requisition.get("north")
+    west = requisition.get("west")
+    south = requisition.get("south")
+    east = requisition.get("east")
+    page_size = 200  # It seems that the maximum number is 200 for the website.
     content = requests.get(
         f"https://services.realestate.com.au/services/listings/search?query="
         f'{{"channel":"rent","filters":{{"priceRange":{{"minimum":"{min_price}",'
@@ -370,5 +387,7 @@ def update_property_data(
                     f"No longer available preferred properties: {passed_names & preferred_names}"
                 )
                 print()
-                print(f"{len(passed_names - preferred_names)} other properties are no longer available.")
+                print(
+                    f"{len(passed_names - preferred_names)} other properties are no longer available."
+                )
         return add_data
