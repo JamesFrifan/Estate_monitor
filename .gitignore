@@ -1,5 +1,7 @@
+*.pyc
+*.DS_Store
+*.ipynb_checkpoints/*
+main/temp/
 main/venv/
 main/.idea/
-main/__pycache__/
 data/
-.DS_Store

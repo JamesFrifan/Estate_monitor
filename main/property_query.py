@@ -1,31 +1,26 @@
 import requests
 import numpy as np
 import pandas as pd
-import re
-import time
 import warnings
 
 
-def distill_from_pattern(string, start_pattern, end_pattern="<"):
-    search = re.search(start_pattern, string)
-    string = string[search.end() :]
-    search = re.search(end_pattern, string)
-    return string[: search.start()], string[search.end() :]
+def standardize_room_street(room, street):
+    # Standardize room: check if room format is expected.
+    if room not in ["", "-"]:
+        if room[:4] == "UNIT":  # Unit 1510
+            room_c = room[4:].strip()
+        elif room[0] in [x for x in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"]:  # G05, H8, C101
+            room_c = room[1:]
+        elif room[-1] in [x for x in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"]:  # 407B
+            room_c = room[:-1]
+        else:
+            room_c = room  # 308
+        try:
+            int(room_c)
+        except ValueError:  # 2 Bedroom Apartment/800 Swanston Street
+            room = ""
 
-
-def domain_exceeding_check(collected_num, content):
-    actual_num, _ = distill_from_pattern(content, '"actualTotalResults":', ",")
-    if_exceed, _ = distill_from_pattern(
-        content, '"actualTotalResultsExceedsMaximum":', "}"
-    )
-    if if_exceed != "false":
-        warnings.warn("Number of Domain properties exceeds maximum limit")
-    if int(actual_num) != collected_num:
-        raise ValueError("Number of searched and collected entries mismatched.")
-    return
-
-
-def get_room_street(property_name):
+    # Standardize street.
     road_suff = [
         "Street",
         "Road",
@@ -41,353 +36,256 @@ def get_room_street(property_name):
         "ST",
         "RD",
     ]
-    start = re.search("/", property_name)
-    room = ""
-    street = ""
-    if start:
-        room = property_name[: start.start()].strip()
-    else:
-        return room, street
-    for suff in road_suff:
-        end = re.search(suff, property_name[start.start() + 1 :])
-        if end:
-            street = property_name[start.start() + 1 :][: end.start()].strip()
-            break
+    street = street.split(" ")
+    if street[-1] in road_suff:
+        street = street[:-1]
+    street = "".join([x.lower().capitalize() for x in street])
     return room, street
 
 
-def get_domain_content_info(content):
-    info, _ = distill_from_pattern(content, "", '"SearchResults":{"results":')
-    properties = pd.DataFrame()
-    for property_info in info.split('"id"')[1:]:
-        current_property = pd.Series()
-        current_property["Url"], property_info = distill_from_pattern(
-            property_info, '"url":"', '"'
-        )
-        current_property["Url"] = "https://www.domain.com.au" + current_property["Url"]
-        current_property["Price"], property_info = distill_from_pattern(
-            property_info, '"price":"', '"'
-        )
+def get_room_street(estate_name, estate_type):
+    if estate_type in ["House", "Terrace", "Townhouse"]:
+        is_apartment = False
+    else:
+        is_apartment = True
 
-        current_property["Name"], property_info = distill_from_pattern(
-            property_info, '"street":"', '"'
-        )
-        room_street = get_room_street(current_property["Name"])
-        current_property["Room"] = room_street[0]
-        current_property["Address"] = room_street[1]
-        current_property["Name"] += " (D)" + current_property["Url"][-4:]
-        features, property_info = distill_from_pattern(
-            property_info, '"features":{', "}"
-        )
-        features = eval(
-            "{" + features.replace("false", "False").replace("true", "True") + "}"
-        )
-        current_property["Bedroom_num"] = features.get("beds", None)
-        current_property["Bathroom_num"] = features.get("baths", None)
-        current_property["Parking_num"] = features.get("parking", 0)
-        current_property["Type"] = features.get("propertyTypeFormatted", None)
-        properties = properties.append(current_property, ignore_index=True)
-    domain_exceeding_check(len(properties), content)
-    return properties
+    # Split room and steet.
+    if estate_name == "":
+        return "", ""
+    estate_name = estate_name.split("/")
+    if len(estate_name) >= 3:  # Unexpected format.
+        return "", ""
+    if len(estate_name) == 2:  # 907/83 Flemington Road
+        room = estate_name[0].strip().upper()
+        street = estate_name[1]
+    if len(estate_name) == 1:  # 33 Blackwood street
+        street = estate_name[0]
+        if is_apartment:
+            room = ""
+        else:
+            room = "-"
+    room, street = standardize_room_street(room, street)
+    return room, street
 
 
-def get_candidate_domain_properties(requisition):
+def create_domain_url(requisition):
     min_bed = requisition.get("min_bed", 1)
     min_bath = requisition.get("min_bath", 1)
-    max_price = requisition.get("max_price")
+    max_price = requisition.get("max_price", "any")
     min_price = requisition.get("min_price", "0")
     north = requisition.get("north")
     west = requisition.get("west")
     south = requisition.get("south")
     east = requisition.get("east")
-    if min_bath:
-        response = requests.get(
-            f"https://www.domain.com.au/rent/?bedrooms={min_bed}-any&bathrooms={min_bath}-any&price={min_price}-"
-            f"{max_price}&excludedeposittaken=1&startloc={north},{west}&endloc={south},{east}&"
-            f"displaymap=1",
-            headers={
-                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:91.0) Gecko/20100101 Firefox/91.0"
-            },
+    domain_url = (
+        f"https://www.domain.com.au/rent/?bedrooms={min_bed}-any&bathrooms={min_bath}-any&price={min_price}-"
+        f"{max_price}&excludedeposittaken=1&startloc={north},{west}&endloc={south},{east}&"
+        f"displaymap=0"
+    )
+    return domain_url
+
+
+def request_domain_properties(requisition, url=None):
+    if url is None:
+        url = create_domain_url(requisition)
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:91.0) Gecko/20100101 Firefox/91.0",
+        "Accept": "application/json",
+    }
+    content = requests.get(url, headers=headers).json()
+    return content, url
+
+
+def request_domain_multipages(content, url):
+    pages = content["props"]["pageViewMetadata"]["searchResponse"]["SearchResults"][
+        "totalPages"
+    ]
+    for page in range(2, pages + 1):
+        new_url = url + f"&page={page}"
+        page_content, _ = request_domain_properties(None, url=new_url)
+        content["props"]["listingsMap"] = {
+            **content["props"]["listingsMap"],
+            **page_content["props"]["listingsMap"],
+        }
+    return content
+
+
+def add_domain_detail_info(domain_properties):
+    """
+    Add available date and full image (floorplan).
+    """
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:91.0) Gecko/20100101 Firefox/91.0",
+        "Accept": "application/json",
+    }
+    domain_detail_info = domain_properties.copy()
+    avail_date = []
+    full_images = []
+    for url in domain_properties.Url:
+        content = requests.get(url, headers=headers).json()
+        stats = pd.DataFrame(content["props"]["listingSummary"]["stats"])
+        avail_date.append(stats.query("key=='availableFrom'")["value"].iloc[0])
+        full_images.append(content["props"]["gallery"]["slides"])
+    domain_detail_info["Available"] = avail_date
+    domain_detail_info["Images"] = full_images
+    return domain_detail_info
+
+
+def get_domain_properties(requisition, get_details=False):
+    content, url = request_domain_properties(requisition)
+
+    # Quality control.
+    page_info = content["props"]["pageViewMetadata"]["searchResponse"]["SearchResults"]
+    if page_info["actualTotalResultsExceedsMaximum"]:
+        warnings.warn("Number of Domain properties exceeds maximum limit")
+    if page_info["totalPages"] != 1:
+        content = request_domain_multipages(content, url)
+    n_total = page_info["totalResults"]
+
+    # Read information.
+    property_info = []
+    for estate_web in content["props"]["listingsMap"].values():
+        estate_web = estate_web["listingModel"]
+        estate_info = dict()
+        estate_info["Url"] = "https://www.domain.com.au" + estate_web["url"]
+        estate_info["Price"] = estate_web["price"]
+        estate_info["Name"] = estate_web["address"]["street"]
+        estate_info["Suburb"] = (
+            "".join(estate_web["address"]["suburb"].split(" ")).lower().capitalize()
         )
-    else:
-        response = requests.get(
-            f"https://www.domain.com.au/rent/?bedrooms={min_bed}-any&price={min_price}-{max_price}&"
-            f"excludedeposittaken=1&startloc={north},{west}&endloc={south},{east}&"
-            f"displaymap=1",
-            headers={
-                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:91.0) Gecko/20100101 Firefox/91.0"
-            },
+        estate_info["State"] = estate_web["address"]["state"].upper()
+        estate_info["Latitude"] = estate_web["address"]["lat"]
+        estate_info["Longitude"] = estate_web["address"]["lng"]
+        estate_info["Bedroom_num"] = estate_web["features"].get("beds", None)
+        estate_info["Bathroom_num"] = estate_web["features"].get("baths", None)
+        estate_info["Parking_num"] = estate_web["features"].get("parking", 0)
+        estate_info["Type"] = estate_web["features"].get("propertyTypeFormatted", None)
+        estate_info["Room"], estate_info["Street"] = get_room_street(
+            estate_info["Name"], estate_info["Type"]
         )
-    content = response.content.decode("utf-8")
-    property_info = get_domain_content_info(content)
+        estate_info["Images"] = estate_web["images"]
+        if estate_info["Room"] != "":
+            estate_info["PID"] = (
+                f"{estate_info['Room']}_{estate_info['Street']}_{estate_info['Suburb']}_"
+                f"{estate_info['State']}"
+            )
+        property_info.append(estate_info)
+
+    property_info = pd.DataFrame(property_info)
     property_info["Source"] = "Domain"
+    property_info["Available"] = ""
+    if get_details:
+        property_info = add_domain_detail_info(property_info)
     return property_info
 
 
-def get_domain_details(url):
-    detail_info = pd.Series()
-    content = requests.get(url).content.decode("utf-8")
-
-    start_point = re.search("Available from ", content).end()
-    end_point = re.search('"', content[start_point:]).start()
-    detail_info["Available"] = content[start_point : end_point + start_point]
-    return detail_info
-
-
-def initiate_domain_properties(property_info, get_avail_date=False):
-    if get_avail_date:
-        detail_info = pd.DataFrame()
-        for url in property_info["Url"]:
-            detail_info = detail_info.append(get_domain_details(url), ignore_index=True)
-        detail_info.index = property_info.index
-        property_data = pd.concat([property_info, detail_info], axis=1)
-    else:
-        property_data = property_info.copy()
-        property_data["Available"] = ""
-    return property_data
-
-
-def slice_line(left_content, start, stop_str):
-    start_str = left_content[start:]
-    return start_str[: re.search(stop_str, start_str).start()]
-
-
-def get_realestate_properties(requisition):
+def create_realestate_url(requisition):
     min_bed = requisition.get("min_bed", 1)
-    min_bath = requisition.get("min_bath", 1)
-    max_price = requisition.get("max_price")
+    max_price = requisition.get("max_price", "any")
     min_price = requisition.get("min_price", "0")
     north = requisition.get("north")
     west = requisition.get("west")
     south = requisition.get("south")
     east = requisition.get("east")
     page_size = 200  # It seems that the maximum number is 200 for the website.
-    content = requests.get(
+    realestate_url = (
         f"https://services.realestate.com.au/services/listings/search?query="
-        f'{{"channel":"rent","filters":{{"priceRange":{{"minimum":"{min_price}",'
-        f'"maximum":"{max_price}"}},'
+        f'{{"channel":"rent","filters":{{"priceRange":{{"minimum":"{min_price}","maximum":"{max_price}"}},'
         f'"bedroomsRange":{{"minimum":"{min_bed}"}},"surroundingSuburbs":"true",'
         f'"excludeTier2":"true","geoPrecision":"address","excludeAddressHidden":'
-        f'"true"}},'
-        f'"boundingBoxSearch":[{south},{west},{north},{east}],"pageSize":"{page_size}"}}'
-    ).content.decode("UTF-8")
-    property_info = pd.DataFrame()
-    current_property = pd.Series()
-    left_content = content
-    while re.search('"lister":', left_content):
-        left_content = left_content[re.search('"lister":', left_content).end() :]
-        try:
-            property_content = left_content[
-                : re.search('"lister":', left_content).end()
-            ]
-        except AttributeError:
-            property_content = left_content
-        if len(current_property) != 0:
-            property_info = property_info.append(current_property, ignore_index=True)
-            current_property = pd.Series()
+        f'"true"}},"boundingBoxSearch":[{south},{west},{north},{east}],"pageSize":"{page_size}"}}'
+    )
+    return realestate_url
 
-        if re.search('{"prettyUrl":{"href":"', property_content):
-            current_property["Url"] = slice_line(
-                property_content,
-                re.search('{"prettyUrl":{"href":"', property_content).end(),
-                '"',
+
+def request_realestate_properties(requisition, url=None):
+    if url is None:
+        url = create_realestate_url(requisition)
+    content = requests.get(url).json()
+    return content, url
+
+
+def request_realestate_multipages(content, url):
+    n_count = content["totalResultsCount"]
+    page_size = int(content["resolvedQuery"]["pageSize"])
+    for page in range(2, int((n_count - 1) / page_size) + 2):
+        if page == 11:
+            warnings.warn("Number of Realestate properties exceeds maximum limit")
+            continue
+        new_url = url[:-1] + ',"page":"' + str(page) + '"}'
+        page_content, _ = request_realestate_properties(None, url=new_url)
+        content["tieredResults"][0]["results"].extend(
+            page_content["tieredResults"][0]["results"]
+        )
+    return content
+
+
+def get_realestate_properties(requisition):
+    content, url = request_realestate_properties(requisition)
+
+    # Quality control.
+    if len(content["tieredResults"]) != 1:
+        raise ValueError("Unexpected tier result count!")
+    if int(content["totalResultsCount"]) >= 200:
+        content = request_realestate_multipages(content, url)
+
+    # Read information.
+    property_info = []
+    for estate_web in content["tieredResults"][0]["results"]:
+        estate_info = dict()
+        estate_info["Url"] = estate_web["_links"]["prettyUrl"]["href"]
+        estate_info["Bedroom_num"] = estate_web["features"]["general"]["bedrooms"]
+        estate_info["Bathroom_num"] = estate_web["features"]["general"]["bathrooms"]
+        estate_info["Parking_num"] = estate_web["features"]["general"]["parkingSpaces"]
+        estate_info["Price"] = estate_web["price"]["display"]
+        estate_info["Type"] = estate_web["propertyType"].capitalize()
+        estate_info["Name"] = estate_web["address"]["streetAddress"]
+        estate_info["Room"], estate_info["Street"] = get_room_street(
+            estate_info["Name"], estate_info["Type"]
+        )
+        estate_info["Suburb"] = (
+            "".join(estate_web["address"]["suburb"].split(" ")).lower().capitalize()
+        )
+        estate_info["State"] = estate_web["address"]["state"].upper()
+        estate_info["Latitude"] = estate_web["address"]["location"]["latitude"]
+        estate_info["Longitude"] = estate_web["address"]["location"]["longitude"]
+        estate_info["Available"] = estate_web["dateAvailable"]["date"]
+        estate_info["Images"] = estate_web["images"]
+        if estate_info["Room"] != "":
+            estate_info["PID"] = (
+                f"{estate_info['Room']}_{estate_info['Street']}_{estate_info['Suburb']}_"
+                f"{estate_info['State']}"
             )
+        property_info.append(estate_info)
 
-        if re.search('"price":{"display":"', property_content):
-            current_property["Price"] = slice_line(
-                property_content,
-                re.search('"price":{"display":"', property_content).end(),
-                '"',
-            )
-
-        if re.search('],"address":{"streetAddress":"', property_content):
-            current_property["Name"] = (
-                slice_line(
-                    property_content,
-                    re.search('],"address":{"streetAddress":"', property_content).end(),
-                    '"',
-                )
-                + " (R)"
-                + current_property["Url"][-4:]
-            )
-            room_street = get_room_street(current_property["Name"])
-            current_property["Room"] = room_street[0]
-            current_property["Address"] = room_street[1]
-
-        if re.search('"propertyType":"', property_content):
-            current_property["Type"] = slice_line(
-                property_content,
-                re.search('"propertyType":"', property_content).end(),
-                '"',
-            )
-
-        if re.search('general":', property_content):
-            room_feature = eval(
-                slice_line(
-                    property_content,
-                    re.search('general":', property_content).end(),
-                    "}",
-                )
-                + "}"
-            )
-            current_property["Bedroom_num"] = room_feature["bedrooms"]
-            current_property["Bathroom_num"] = room_feature["bathrooms"]
-            current_property["Parking_num"] = room_feature["parkingSpaces"]
-
-        # if re.search('startTime":"', property_content):
-        #    current_property['Inspection'] = slice_line(property_content,
-        #                                                re.search('startTime":"', property_content).end(), '"')
-
-        if re.search('dateAvailable":{"date":"', property_content):
-            current_property["Available"] = slice_line(
-                property_content,
-                re.search('dateAvailable":{"date":"', property_content).end(),
-                '"',
-            )
-
-    # if min_bath:
-    #    print(current_property, 'ini')
-    #    current_property = current_property[current_property['Bathroom_num'] >= min_bath]
-    #    print(current_property)
-    property_info = property_info.append(current_property, ignore_index=True)
+    property_info = pd.DataFrame(property_info)
     property_info["Source"] = "Realestate"
-    if len(property_info) == page_size:
-        warnings.warn("Number of Realestate properties may exceed maximum limit")
-
-    if min_bath:
-        property_info = property_info[property_info["Bathroom_num"] >= min_bath]
-
     return property_info
 
 
-def initiate_property_data(file, domain_property_info, realestate_property_info):
-    domain_property_data = initiate_domain_properties(domain_property_info)
-    property_data = domain_property_data.append(
-        realestate_property_info, ignore_index=True, sort=False
-    ).sort_values("Name")
-    property_data["Preferred"] = False
-    property_data = property_data.set_index("Name")
-    if file is not None:
-        property_data.to_csv(file)
-    return property_data
+def merge_realestate_domain_properties(rp, dp):
+    # Check ID availability.
+    if rp.PID.dropna().duplicated().any() or dp.PID.dropna().duplicated().any():
+        warnings.warn("Duplicated property found!")
+        dup_indices = rp.dropna()[rp.PID.dropna().duplicated(keep=False)].index
+        rp.loc[dup_indices, "PID"] = np.nan
+        dup_indices = dp.dropna()[dp.PID.dropna().duplicated(keep=False)].index
+        dp.loc[dup_indices, "PID"] = np.nan
+    rp_pid = set(rp.PID.dropna())
+    dp_pid = set(dp.PID.dropna())
+    both_pid = rp_pid & dp_pid
+    ronly_pid = rp_pid - dp_pid
+    donly_pid = dp_pid - rp_pid
 
-
-def get_diff_info(name_of_diff, previous_data, now_data):
-    diff_dict = dict()
-    for name in name_of_diff:
-        diff_value = dict()
-        for col in now_data:
-            try:
-                if previous_data.loc[name, col] != now_data.loc[name, col]:
-                    diff_value[col] = [
-                        previous_data.loc[name, col],
-                        now_data.loc[name, col],
-                    ]
-            except ValueError:  # Duplicate index.
-                if not previous_data.loc[name, col].equals(now_data.loc[name, col]):
-                    diff_value[col] = [
-                        previous_data.loc[name, col].iloc[0],
-                        now_data.loc[name, col].iloc[0],
-                    ]
-        diff_dict[name] = diff_value
-    return diff_dict
-
-
-def print_diff_info(diff_dict, preferred_names):
-    for name in diff_dict:
-        if name in preferred_names:
-            print(f"{name}: ", end="")
-            for value in diff_dict[name]:
-                print(
-                    f"{value} from '{diff_dict[name][value][0]}' to '{diff_dict[name][value][1]}'. ",
-                    end="",
-                )
-            print()
-        else:
-            continue
-    return
-
-
-def update_property_data(
-    file, previous_data, domain_property_info, realestate_property_info, log_file
-):
-    common_col = ["Price", "Type", "Url", "Source"]
-    now_data = (
-        domain_property_info[common_col + ["Name"]]
-        .append(
-            realestate_property_info[common_col + ["Name"]],
-            ignore_index=True,
-            sort=False,
-        )
-        .sort_values("Name")
+    # Create merged property data.
+    both = rp.query("PID in @both_pid").copy()
+    both["Source"] = "Both"
+    rsource = rp[rp["PID"].isin(ronly_pid) | rp["PID"].isna()]
+    dsource = dp[dp["PID"].isin(donly_pid) | dp["PID"].isna()]
+    merge_p = pd.concat([both, rsource, dsource], ignore_index=True).sort_values(
+        ["Street", "Room"]
     )
-    now_data = now_data.set_index("Name")
-
-    if previous_data[common_col].sort_values("Url").equals(now_data.sort_values("Url")):
-        print("No update found.")
-        return
-
-    else:
-        pre_names = set(previous_data.index)
-        now_names = set(now_data.index)
-        same_names = pre_names & now_names
-        diff_dict = None
-        new_names = now_names - pre_names
-        passed_names = pre_names - now_names
-        add_data = pd.DataFrame()
-        if (
-            not previous_data.loc[same_names, common_col]
-            .sort_values("Url")
-            .equals(now_data.loc[same_names].sort_values("Url"))
-        ):
-            if_no_diff = (
-                previous_data.loc[same_names, common_col]
-                .sort_values("Url")
-                .eq(now_data.loc[same_names].sort_values("Url"))
-                .all(axis=1)
-            )
-            name_of_diff = if_no_diff[~if_no_diff].index
-            diff_dict = get_diff_info(name_of_diff, previous_data, now_data)
-            previous_data.loc[name_of_diff, common_col] = now_data.loc[
-                name_of_diff, common_col
-            ]
-        if len(new_names) > 0:
-            add_data = initiate_property_data(
-                None,
-                domain_property_info[domain_property_info["Name"].isin(new_names)],
-                realestate_property_info[
-                    realestate_property_info["Name"].isin(new_names)
-                ],
-            )
-
-        updated_data = previous_data.loc[same_names].append(add_data).sort_index()
-        updated_data.to_csv(file)
-        with open(log_file, "a+") as f:
-            present = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
-            preferred_names = set(previous_data[previous_data["Preferred"]].index)
-            nonpreferred_names = set(previous_data[~previous_data["Preferred"]].index)
-            f.write(f"  Update at: {present} (UTC)\n")
-            if diff_dict is not None:
-                f.write(f"    Properties' value change: {diff_dict}\n")
-                print(f"Value change for preferred property(ies):")
-                print_diff_info(diff_dict, preferred_names)
-                print()
-                print(f"Value change for non-preferred property(ies):")
-                print_diff_info(diff_dict, nonpreferred_names)
-                print()
-            if len(new_names) > 0:
-                f.write(f"    Add new properties: {new_names}\n")
-                print(f"New available properties:")
-                for name in new_names:
-                    print(f"  {name}: {updated_data.loc[name, 'Url']}")
-                print()
-            if len(passed_names) > 0:
-                f.write(f"    Delete properties: {passed_names}\n")
-                print(
-                    f"No longer available preferred properties: {passed_names & preferred_names}"
-                )
-                print()
-                print(
-                    f"{len(passed_names - preferred_names)} other properties are no longer available."
-                )
-        return add_data
+    indices = merge_p["PID"].fillna(merge_p["Url"])
+    indices.name = ""
+    merge_p.index = indices
+    return merge_p

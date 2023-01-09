@@ -1,36 +1,6 @@
-import pandas as pd
-import time
+import os
 import property_query as ppq
-
-
-def monitor_properties(file, log_file, requisition):
-    domain_property_info = ppq.get_candidate_domain_properties(requisition)
-    realestate_property_info = ppq.get_realestate_properties(requisition)
-    try:
-        previous_data = pd.read_csv(file, index_col=0)
-        return ppq.update_property_data(
-            file,
-            previous_data,
-            domain_property_info,
-            realestate_property_info,
-            log_file,
-        )
-    except FileNotFoundError:
-        present = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
-        with open(log_file, "w+") as f:
-            f.write(f"Start monitoring properties in {file} at: {present} (UTC)\n")
-        print("Property monitor initiating...")
-        return ppq.initiate_property_data(
-            file, domain_property_info, realestate_property_info
-        )
-
-
-def set_preference(file, names, set_not_preferred=True):
-    # should be logged
-    foo = pd.read_csv(file, index_col=0)
-    foo.loc[names, "Preferred"] = not set_not_preferred
-    foo.to_csv(file)
-    return
+import property_monitor as ppm
 
 
 def transform_angle(ms_angle):
@@ -45,6 +15,60 @@ def transform_angle(ms_angle):
     return de_angle
 
 
-def make_clickable(val):
+def monitor_properties(folder, requisition, init_ignore=None):
+    realestate_property = ppq.get_realestate_properties(requisition)
+    domain_property = ppq.get_domain_properties(requisition)
+    property_data = ppq.merge_realestate_domain_properties(
+        realestate_property, domain_property
+    )
+
+    if os.path.isdir(folder):
+        print("Updating property monitor.")
+        new_prop = ppm.update_property_data(folder, property_data)
+    else:
+        print("Initiating property monitor.")
+        new_prop = ppm.initiate_property_data(folder, property_data, init_ignore)
+    if new_prop is not None:
+        new_prop = ppm.filter_prop(new_prop, folder)
+    return new_prop
+
+
+def make_clickable_url(props):
     # target _blank to open new window
-    return '<a target="_blank" href="{}">{}</a>'.format(val, val)
+    return props.style.format(
+        {"Url": lambda val: '<a target="_blank" href="{}">{}</a>'.format(val, val)}
+    )
+
+
+def set_preferred_properties(folder, names, set_to_preferred=True):
+    if type(names) == str:
+        names = [names]
+    names = set(names)
+    with open(f"{folder}preference.txt", "r") as f:
+        pref = set(f.read().split(","))
+
+    if set_to_preferred:
+        pref |= names
+    else:
+        pref -= names
+
+    with open(f"{folder}preference.txt", "w") as f:
+        f.write(",".join(pref))
+    return
+
+
+def set_ignored_streets(folder, streets, set_to_ignored=True):
+    if type(streets) == str:
+        streets = [streets]
+    streets = set(streets)
+    with open(f"{folder}ignore_street.txt", "r") as f:
+        ignored = set(f.read().split(","))
+
+    if set_to_ignored:
+        ignored |= streets
+    else:
+        ignored -= streets
+
+    with open(f"{folder}ignore_street.txt", "w") as f:
+        f.write(",".join(ignored))
+    return
