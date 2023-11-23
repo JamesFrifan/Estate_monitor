@@ -15,6 +15,7 @@ def standardize_room_street(room, street):
             room_c = room[:-1]
         else:
             room_c = room  # 308
+        room_c = ''.join(room_c.split('.'))  # 12.01; G.11
         try:
             int(room_c)
         except ValueError:  # 2 Bedroom Apartment/800 Swanston Street
@@ -44,7 +45,7 @@ def standardize_room_street(room, street):
 
 
 def get_room_street(estate_name, estate_type):
-    if estate_type in ["House", "Terrace", "Townhouse"]:
+    if estate_type in ["House", "Terrace", "Townhouse", "Villa"]:
         is_apartment = False
     else:
         is_apartment = True

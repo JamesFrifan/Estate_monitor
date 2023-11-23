@@ -56,7 +56,7 @@ def diff_property_info(previous_ori, current_ori):
     passed_pids = pre_pids - cur_pids
     same_pids = pre_pids & cur_pids
     change_dict = get_prop_value_change(
-        previous_prop.loc[same_pids, check_col], current_prop.loc[same_pids, check_col]
+        previous_prop.loc[list(same_pids), check_col], current_prop.loc[list(same_pids), check_col]
     )
     return {"new": new_pids, "passed": passed_pids, "changed": change_dict}
 
@@ -77,7 +77,7 @@ def log_update_info(folder, diff_result):
 def print_changes_info(diff_dict, pid_set):
     for pid in diff_dict:
         if pid in pid_set:
-            print(f"{pid}: ", end="")
+            print(f"{pid} : ", end="")
             for categ, values in diff_dict[pid].items():
                 print(f"{categ} from '{values[0]}' to '{values[1]}'. ", end="")
             print()
